@@ -7,14 +7,20 @@ const PORT = process.env.PORT || 3000;
 const PROXY_API_KEY = process.env.PROXY_API_KEY || '';
 const MAX_IMAGES = 20;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const TIMEOUT = 15000;
+const REQUEST_TIMEOUT = 15000;
 
 app.use(express.json({ limit: '1mb' }));
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET, POST, OPTIONS'
+  );
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -23,10 +29,10 @@ app.use((req, res, next) => {
   next();
 });
 
-function getProvider(path) {
-  if (path.startsWith('/v1/openai')) {
+function getProvider(pathname) {
+  if (pathname.startsWith('/v1/openai')) {
     return {
-      baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
+      baseUrl: (process.env.OPENAI_BASE_URL || '').replace(/\/$/, ''),
       apiKey: process.env.OPENAI_API_KEY || '',
       model: process.env.OPENAI_MODEL || ''
     };
@@ -39,16 +45,16 @@ function getProvider(path) {
   };
 }
 
-function checkProxyKey(req, res, next) {
-  const key = req.headers.authorization || '';
-
+function requireProxyKey(req, res, next) {
   if (!PROXY_API_KEY) {
     return res.status(503).json({
       error: 'PROXY_API_KEY is not configured'
     });
   }
 
-  if (key !== `Bearer ${PROXY_API_KEY}`) {
+  const authorization = req.headers.authorization || '';
+
+  if (authorization !== `Bearer ${PROXY_API_KEY}`) {
     return res.status(401).json({
       error: 'Invalid API key'
     });
@@ -91,7 +97,7 @@ async function request(url, options = {}) {
 
   const timer = setTimeout(() => {
     controller.abort();
-  }, TIMEOUT);
+  }, REQUEST_TIMEOUT);
 
   try {
     return await fetch(url, {
@@ -101,6 +107,74 @@ async function request(url, options = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function findXhsUrl(messages) {
+  const text = JSON.stringify(messages);
+
+  const match = text.match(
+    /https?:\/\/(?:xhslink\.cn|(?:www\.)?xiaohongshu\.com)\/[^\s"'<>]+/i
+  );
+
+  return match ? match[0].replace(/[),.]+$/, '') : null;
+}
+
+function readInitialState(html) {
+  const match = html.match(
+    /window\.__INITIAL_STATE__\s*=\s*/
+  );
+
+  if (!match || match.index === undefined) {
+    return null;
+  }
+
+  const jsonStart = match.index + match[0].length;
+  const scriptEnd = html.indexOf('</script>', jsonStart);
+
+  if (scriptEnd < 0) {
+    return null;
+  }
+
+  let jsonText = html
+    .slice(jsonStart, scriptEnd)
+    .trim();
+
+  if (jsonText.endsWith(';')) {
+    jsonText = jsonText.slice(0, -1);
+  }
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error('Cannot parse XHS state:', error.message);
+    return null;
+  }
+}
+
+function readMeta(html, key) {
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
+
+  for (const tag of tags) {
+    const hasName =
+      new RegExp(
+        `(?:name|property)=["']${key}["']`,
+        'i'
+      ).test(tag);
+
+    if (!hasName) {
+      continue;
+    }
+
+    const content = tag.match(
+      /content=["']([^"']*)["']/i
+    );
+
+    if (content) {
+      return content[1];
+    }
+  }
+
+  return '';
 }
 
 async function parseXhs(url) {
@@ -118,38 +192,56 @@ async function parseXhs(url) {
   });
 
   if (!response.ok) {
-    throw new Error(`Xiaohongshu returned HTTP ${response.status}`);
+    throw new Error(
+      `Xiaohongshu returned HTTP ${response.status}`
+    );
   }
 
   const finalUrl = normalizeUrl(response.url) || inputUrl;
 
   const html = await response.text();
+  const state = readInitialState(html);
 
-  const match = html.match(
-    /window\.__INITIAL_STATE__\s*=\s*({.*?});/
-  );
+  let data =
+    state?.noteData?.data?.noteData ||
+    state?.noteData?.normalNotePreloadData;
 
-  if (!match) {
+  // 如果初始状态读取失败，则使用网页公开的 meta 信息兜底
+  if (!data) {
+    const title =
+      readMeta(html, 'og:title') ||
+      html.match(/<title[^>]*>(.*?)<\/title>/i)?.[1] ||
+      '';
+
+    const desc =
+      readMeta(html, 'og:description') ||
+      readMeta(html, 'description') ||
+      '';
+
+    const image = readMeta(html, 'og:image');
+
+    if (title || desc || image) {
+      data = {
+        title,
+        desc,
+        user: {},
+        imageList: image ? [{ url: image }] : [],
+        comments: []
+      };
+    }
+  }
+
+  if (!data) {
     throw new Error(
       'Cannot find note data. The note may require login or may be unavailable.'
     );
   }
 
-  const state = JSON.parse(match[1]);
-
-  const data =
-    state.noteData?.data?.noteData ||
-    state.noteData?.normalNotePreloadData;
-
-  if (!data) {
-    throw new Error(
-      'Note data not found. The note may be deleted or require login.'
-    );
-  }
-
   const images =
     data.imageList
-      ?.map((image) => image.url || image.infoList?.[0]?.url)
+      ?.map((image) => {
+        return image.url || image.infoList?.[0]?.url;
+      })
       .filter(Boolean) || [];
 
   const comments = (data.comments || [])
@@ -187,9 +279,11 @@ async function imageToBase64(url) {
     return null;
   }
 
-  const length = Number(response.headers.get('content-length'));
+  const contentLength = Number(
+    response.headers.get('content-length')
+  );
 
-  if (length > MAX_IMAGE_BYTES) {
+  if (contentLength > MAX_IMAGE_BYTES) {
     return null;
   }
 
@@ -199,7 +293,9 @@ async function imageToBase64(url) {
     return null;
   }
 
-  const mime = response.headers.get('content-type') || 'image/jpeg';
+  const mime =
+    response.headers.get('content-type') || 'image/jpeg';
+
   const base64 = buffer.toString('base64');
 
   return {
@@ -210,21 +306,13 @@ async function imageToBase64(url) {
   };
 }
 
-function findXhsUrl(messages) {
-  const text = JSON.stringify(messages);
-
-  const match = text.match(
-    /https?:\/\/(?:xhslink\.cn|(?:www\.)?xiaohongshu\.com)\/[^\s"'<>]+/i
-  );
-
-  return match ? match[0].replace(/[),.]+$/, '') : null;
-}
-
 async function buildXhsMessage(url, question) {
   const note = await parseXhs(url);
 
   const images = await Promise.all(
-    note.images.slice(0, MAX_IMAGES).map(imageToBase64)
+    note.images
+      .slice(0, MAX_IMAGES)
+      .map(imageToBase64)
   );
 
   const imageBlocks = images
@@ -237,11 +325,13 @@ async function buildXhsMessage(url, question) {
     }));
 
   const commentText = note.comments
-    .map((comment) => `${comment.user}: ${comment.content}`)
+    .map((comment) => {
+      return `${comment.user}: ${comment.content}`;
+    })
     .join('\n');
 
   const text = [
-    '请根据下面的小红书笔记内容和图片回答用户问题。',
+    '请根据下面的小红书笔记内容、图片和评论回答用户问题。',
     `标题：${note.title}`,
     `作者：${note.author}`,
     `正文：${note.desc}`,
@@ -263,9 +353,16 @@ async function buildXhsMessage(url, question) {
 async function chatHandler(req, res) {
   try {
     const provider = getProvider(req.path);
-    let { messages, temperature = 0.7 } = req.body;
+    let {
+      messages,
+      temperature = 0.7
+    } = req.body;
 
-    if (!provider.baseUrl || !provider.apiKey || !provider.model) {
+    if (
+      !provider.baseUrl ||
+      !provider.apiKey ||
+      !provider.model
+    ) {
       return res.status(503).json({
         error: 'AI provider is not configured'
       });
@@ -290,10 +387,11 @@ async function chatHandler(req, res) {
             ? lastUserMessage.content
             : JSON.stringify(lastUserMessage.content);
 
-        lastUserMessage.content = await buildXhsMessage(
-          xhsUrl,
-          question
-        );
+        lastUserMessage.content =
+          await buildXhsMessage(
+            xhsUrl,
+            question
+          );
       }
     }
 
@@ -337,18 +435,27 @@ async function chatHandler(req, res) {
   }
 }
 
-app.get('/api/parse', checkProxyKey, async (req, res) => {
+async function parseHandler(req, res) {
   try {
-    const note = await parseXhs(req.query.url);
+    const url =
+      req.method === 'GET'
+        ? req.query.url
+        : req.body.url;
 
-    const images = await Promise.all(
-      note.images.slice(0, MAX_IMAGES).map(imageToBase64)
-    );
+    const note = await parseXhs(url);
+
+    const imageData = (
+      await Promise.all(
+        note.images
+          .slice(0, MAX_IMAGES)
+          .map(imageToBase64)
+      )
+    ).filter(Boolean);
 
     res.json({
       ok: true,
       note,
-      imageData: images.filter(Boolean)
+      imageData
     });
   } catch (error) {
     res.status(502).json({
@@ -356,20 +463,18 @@ app.get('/api/parse', checkProxyKey, async (req, res) => {
       error: error.message
     });
   }
-});
+}
 
-app.post('/api/parse', checkProxyKey, async (req, res) => {
+app.get('/api/parse', requireProxyKey, parseHandler);
+app.post('/api/parse', requireProxyKey, parseHandler);
+
+app.post('/api/xhs-card', async (req, res) => {
   try {
     const note = await parseXhs(req.body.url);
 
-    const images = await Promise.all(
-      note.images.slice(0, MAX_IMAGES).map(imageToBase64)
-    );
-
     res.json({
       ok: true,
-      note,
-      imageData: images.filter(Boolean)
+      note
     });
   } catch (error) {
     res.status(502).json({
@@ -379,34 +484,92 @@ app.post('/api/parse', checkProxyKey, async (req, res) => {
   }
 });
 
-app.post('/v1/deepseek/chat/completions', checkProxyKey, chatHandler);
-app.post('/v1/openai/chat/completions', checkProxyKey, chatHandler);
+app.post('/api/xhs-images', async (req, res) => {
+  try {
+    const { urls } = req.body;
 
-app.get('/v1/deepseek/models', checkProxyKey, (req, res) => {
-  res.json({
-    object: 'list',
-    data: [
-      {
-        id: process.env.DEEPSEEK_MODEL || '',
-        object: 'model',
-        owned_by: 'custom'
-      }
-    ]
-  });
+    if (!Array.isArray(urls)) {
+      return res.status(400).json({
+        error: 'urls must be an array'
+      });
+    }
+
+    const images = await Promise.all(
+      urls.slice(0, MAX_IMAGES).map(async (url) => {
+        const image = await imageToBase64(url);
+
+        if (!image) {
+          return {
+            url,
+            error: 'Unable to download image'
+          };
+        }
+
+        return {
+          url: image.url,
+          mime: image.mime,
+          base64: image.base64
+        };
+      })
+    );
+
+    res.json({
+      ok: true,
+      images
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
 });
 
-app.get('/v1/openai/models', checkProxyKey, (req, res) => {
-  res.json({
-    object: 'list',
-    data: [
-      {
-        id: process.env.OPENAI_MODEL || '',
-        object: 'model',
-        owned_by: 'custom'
-      }
-    ]
-  });
-});
+app.post(
+  '/v1/deepseek/chat/completions',
+  requireProxyKey,
+  chatHandler
+);
+
+app.post(
+  '/v1/openai/chat/completions',
+  requireProxyKey,
+  chatHandler
+);
+
+app.get(
+  '/v1/deepseek/models',
+  requireProxyKey,
+  (req, res) => {
+    res.json({
+      object: 'list',
+      data: [
+        {
+          id: process.env.DEEPSEEK_MODEL || '',
+          object: 'model',
+          owned_by: 'custom'
+        }
+      ]
+    });
+  }
+);
+
+app.get(
+  '/v1/openai/models',
+  requireProxyKey,
+  (req, res) => {
+    res.json({
+      object: 'list',
+      data: [
+        {
+          id: process.env.OPENAI_MODEL || '',
+          object: 'model',
+          owned_by: 'custom'
+        }
+      ]
+    });
+  }
+);
 
 app.get('/', (req, res) => {
   res.json({
