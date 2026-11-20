@@ -155,11 +155,10 @@ function readMeta(html, key) {
   const tags = html.match(/<meta\b[^>]*>/gi) || [];
 
   for (const tag of tags) {
-    const hasName =
-      new RegExp(
-        `(?:name|property)=["']${key}["']`,
-        'i'
-      ).test(tag);
+    const hasName = new RegExp(
+      `(?:name|property)=["']${key}["']`,
+      'i'
+    ).test(tag);
 
     if (!hasName) {
       continue;
@@ -198,7 +197,6 @@ async function parseXhs(url) {
   }
 
   const finalUrl = normalizeUrl(response.url) || inputUrl;
-
   const html = await response.text();
   const state = readInitialState(html);
 
@@ -206,7 +204,6 @@ async function parseXhs(url) {
     state?.noteData?.data?.noteData ||
     state?.noteData?.normalNotePreloadData;
 
-  // 如果初始状态读取失败，则使用网页公开的 meta 信息兜底
   if (!data) {
     const title =
       readMeta(html, 'og:title') ||
@@ -353,10 +350,9 @@ async function buildXhsMessage(url, question) {
 async function chatHandler(req, res) {
   try {
     const provider = getProvider(req.path);
-    let {
-      messages,
-      temperature = 0.7
-    } = req.body;
+    const messages = req.body.messages;
+    const temperature = req.body.temperature ?? 0.7;
+    const stream = req.body.stream === true;
 
     if (
       !provider.baseUrl ||
@@ -407,20 +403,38 @@ async function chatHandler(req, res) {
           model: provider.model,
           messages,
           temperature,
-          stream: false
+          stream
         })
       }
     );
 
-    const result = await response.json();
-
     if (!response.ok) {
+      const errorText = await response.text();
+
       return res.status(502).json({
         error:
-          result.error?.message ||
+          errorText ||
           `AI service returned HTTP ${response.status}`
       });
     }
+
+    if (stream) {
+      res.statusCode = response.status;
+
+      res.setHeader(
+        'Content-Type',
+        response.headers.get('content-type') ||
+          'text/event-stream'
+      );
+
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      response.body.pipe(res);
+      return;
+    }
+
+    const result = await response.json();
 
     res.json(result);
   } catch (error) {
@@ -581,3 +595,4 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+ 
