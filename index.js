@@ -21,6 +21,7 @@ app.use((req, res, next) => {
     'Access-Control-Allow-Methods',
     'GET, POST, OPTIONS'
   );
+  res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -110,13 +111,26 @@ async function request(url, options = {}) {
 }
 
 function findXhsUrl(messages) {
-  const text = JSON.stringify(messages);
+  for (const message of [...messages].reverse()) {
+    if (message.role !== 'user') {
+      continue;
+    }
 
-  const match = text.match(
-    /https?:\/\/(?:xhslink\.cn|(?:www\.)?xiaohongshu\.com)\/[^\s"'<>]+/i
-  );
+    const text =
+      typeof message.content === 'string'
+        ? message.content
+        : JSON.stringify(message.content || '');
 
-  return match ? match[0].replace(/[),.]+$/, '') : null;
+    const matches = text.match(
+      /https?:\/\/(?:xhslink\.cn|(?:www\.)?xiaohongshu\.com)\/[^\s"'<>]+/gi
+    );
+
+    if (matches && matches.length > 0) {
+      return matches[matches.length - 1].replace(/[),.]+$/, '');
+    }
+  }
+
+  return null;
 }
 
 function readInitialState(html) {
@@ -196,8 +210,19 @@ async function parseXhs(url) {
     );
   }
 
-  const finalUrl = normalizeUrl(response.url) || inputUrl;
   const html = await response.text();
+
+  const pageUrl = readMeta(html, 'og:url');
+
+  const finalUrl =
+    normalizeUrl(pageUrl) ||
+    normalizeUrl(response.url) ||
+    inputUrl;
+
+  if (!isXhsHost(finalUrl.hostname)) {
+    throw new Error('Redirected to an unsupported host');
+  }
+
   const state = readInitialState(html);
 
   let data =
@@ -595,4 +620,3 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
- 
