@@ -89,7 +89,8 @@ function isXhsHost(hostname) {
     host === 'xhslink.cn' ||
     host === 'xiaohongshu.com' ||
     host === 'www.xiaohongshu.com' ||
-    host.endsWith('.xiaohongshu.com')
+    host.endsWith('.xiaohongshu.com') ||
+    host.endsWith('.xhscdn.com')
   );
 }
 
@@ -214,14 +215,14 @@ async function parseXhs(url) {
 
   const pageUrl = readMeta(html, 'og:url');
 
-  const finalUrl =
+  const candidateUrl =
     normalizeUrl(pageUrl) ||
-    normalizeUrl(response.url) ||
-    inputUrl;
+    normalizeUrl(response.url);
 
-  if (!isXhsHost(finalUrl.hostname)) {
-    throw new Error('Redirected to an unsupported host');
-  }
+  const finalUrl =
+    candidateUrl && isXhsHost(candidateUrl.hostname)
+      ? candidateUrl
+      : inputUrl;
 
   const state = readInitialState(html);
 
