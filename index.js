@@ -56,3 +56,41 @@ app.post('/api/xhs-card', async (req, res) => {
 // 2. 下载图片并转 base64
 app.post('/api/xhs-images', async (req, res) => {
   try {
+    const { urls } = req.body;
+    if (!urls || !Array.isArray(urls)) {
+      return res.status(400).json({ error: 'Missing or invalid urls array' });
+    }
+
+    const images = [];
+    for (const url of urls) {
+      try {
+        const fullUrl = url.startsWith('//') ? 'https:' + url : url;
+        const response = await fetch(fullUrl);
+        if (!response.ok) {
+          images.push({ url, error: `HTTP ${response.status}` });
+          continue;
+        }
+        const buffer = await response.buffer();
+        const base64 = buffer.toString('base64');
+        const mime = response.headers.get('content-type') || 'image/jpeg';
+        images.push({ url, base64, mime });
+      } catch (err) {
+        images.push({ url, error: err.message });
+      }
+    }
+
+    res.json({ ok: true, images });
+  } catch (err) {
+    console.error('Error fetching xhs images:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 健康检查
+app.get('/', (req, res) => {
+  res.send('XHS Preview Service is running.');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
