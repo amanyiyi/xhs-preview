@@ -91,6 +91,11 @@ app.get('/', (req, res) => {
   res.send('XHS Preview Service is running.');
 });
 
+// 健康检查
+app.get('/', (req, res) => {
+  res.send('XHS Preview Service is running.');
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
