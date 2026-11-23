@@ -268,13 +268,13 @@ async function parseXhs(url) {
       })
       .filter(Boolean) || [];
 
-  const comments = (data.comments || [])
-    .slice(0, 20)
-    .map((comment) => ({
-      user: comment.user?.nickname || '',
-      content: comment.content || '',
-      ipLocation: comment.ipLocation || ''
-    }));
+ const comments =
+  data.comments ||
+  data.commentList ||
+  state?.comment?.data?.comments ||
+  state?.commentData?.comments ||
+  state?.comments ||
+  [];
 
   return {
     url: finalUrl.toString(),
