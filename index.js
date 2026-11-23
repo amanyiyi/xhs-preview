@@ -127,7 +127,8 @@ function findXhsUrl(messages) {
     );
 
     if (matches && matches.length > 0) {
-      return matches[matches.length - 1].replace(/[),.]+$/, '');
+      return matches[matches.length - 1]
+        .replace(/[),.，。！？；：]+$/, '');
     }
   }
 
