@@ -268,13 +268,31 @@ async function parseXhs(url) {
       })
       .filter(Boolean) || [];
 
- const comments =
+const rawComments =
   data.comments ||
   data.commentList ||
   state?.comment?.data?.comments ||
+  state?.comment?.data?.commentList ||
   state?.commentData?.comments ||
   state?.comments ||
   [];
+
+const comments = rawComments
+  .slice(0, 50)
+  .map((comment) => ({
+    user:
+      comment.user?.nickname ||
+      comment.user?.name ||
+      comment.nickname ||
+      '',
+    content:
+      comment.content ||
+      comment.text ||
+      comment.comment ||
+      '',
+    ipLocation: comment.ipLocation || ''
+  }))
+  .filter((comment) => comment.content);
 
   return {
     url: finalUrl.toString(),
@@ -355,15 +373,20 @@ async function buildXhsMessage(url, question) {
     .join('\n');
 
   const text = [
-    '请根据下面的小红书笔记内容、图片和评论回答用户问题。',
-    `标题：${note.title}`,
-    `作者：${note.author}`,
-    `正文：${note.desc}`,
-    `评论区：${commentText}`,
-    `原链接：${note.url}`,
-    '',
-    `用户问题：${question}`
-  ].join('\n');
+  '重要说明：下面的内容已经由服务器成功抓取并提供给你。',
+  '你不需要打开原链接，也不要说自己无法访问链接。',
+  '请直接根据下面的标题、正文、图片和评论回答用户问题。',
+  '如果正文有内容，必须承认你已经收到了正文。',
+  '如果作者或评论为空，只说明该字段没有抓取到，不要否认已经收到其他内容。',
+  '',
+  `标题：${note.title}`,
+  `作者：${note.author}`,
+  `正文：${note.desc}`,
+  `评论区：${commentText}`,
+  `原链接：${note.url}`,
+  '',
+  `用户问题：${question}`
+].join('\n');
 
   return [
     {
